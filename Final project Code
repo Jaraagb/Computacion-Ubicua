@@ -1,0 +1,196 @@
+#include <Servo.h> // Incluimos la librería estándar para controlar servomotores
+
+// ==========================================
+// --- 1. DEFINICIÓN DE PINES ---
+// ==========================================
+#define TRIGGER_PIN 2  // Pin que emite el pulso de sonido
+#define ECHO_PIN 3     // Pin que "escucha" el rebote del sonido
+
+#define S0 4           // Pines S0 y S1 controlan la frecuencia de salida del sensor
+#define S1 5
+#define S2 6           // Pines S2 y S3 seleccionan el filtro de color (Rojo, Verde o Azul)
+#define S3 7
+#define OUT_PIN 8      // Pin por donde el sensor envía la lectura de color al Arduino
+
+#define PIN_SERVO_PLASTICO 9  // Puerta Izquierda (Verde)
+#define PIN_SERVO_PAPEL 10    // Puerta Derecha (Azul)
+
+#define PIN_LED_SENSOR 11     // Pin para controlar los LEDs del TCS3200
+
+Servo servoPlastico;
+Servo servoPapel;
+
+// ==========================================
+// --- 2. VARIABLES DE CALIBRACIÓN DE MOTORES ---
+// ==========================================
+int plasticoCerrado = 180; // Ángulo para mantener la tapa abajo
+int plasticoAbierto = 110; // Ángulo exacto que levanta el cartón sin forzarlo
+
+int papelCerrado = 90;     // Ángulo para mantener la tapa abajo
+int papelAbierto = 180;    // Ángulo exacto que levanta el cartón
+
+int velocidadServo = 20; 
+
+// Variables globales para recordar la posición actual de los motores
+int posActualPlastico = plasticoCerrado;
+int posActualPapel = papelCerrado;
+
+// !!! NUEVA VARIABLE DE CALIBRACIÓN !!!
+// Si el valor del color es MAYOR a este número, significa que está leyendo el vacío.
+// (Si tu sensor sigue abriendo solo, sube este número a 120 o 150. Si no abre con el papel real, bájalo a 70)
+int umbralObjetoReal = 90; 
+
+// ==========================================
+// --- 3. CONFIGURACIÓN INICIAL ---
+// ==========================================
+void setup() {
+  Serial.begin(9600); 
+  
+  pinMode(TRIGGER_PIN, OUTPUT);
+  pinMode(ECHO_PIN, INPUT);
+
+  pinMode(S0, OUTPUT);
+  pinMode(S1, OUTPUT);
+  pinMode(S2, OUTPUT);
+  pinMode(S3, OUTPUT);
+  pinMode(OUT_PIN, INPUT); 
+  
+  pinMode(PIN_LED_SENSOR, OUTPUT); 
+  digitalWrite(PIN_LED_SENSOR, LOW); // Arranca apagado
+  
+  digitalWrite(S0, HIGH); 
+  digitalWrite(S1, LOW); 
+
+  servoPlastico.attach(PIN_SERVO_PLASTICO);
+  servoPapel.attach(PIN_SERVO_PAPEL);
+  
+  servoPlastico.write(plasticoCerrado);
+  servoPapel.write(papelCerrado);
+}
+
+// ==========================================
+// --- 4. BUCLE PRINCIPAL ---
+// ==========================================
+void loop() {
+  
+  // --- FASE A: MEDIR DISTANCIA ---
+  digitalWrite(TRIGGER_PIN, HIGH); 
+  delayMicroseconds(10);           
+  digitalWrite(TRIGGER_PIN, LOW);  
+  
+  long tiempo = pulseIn(ECHO_PIN, HIGH);
+  float distancia = (tiempo / 2.0) * 0.0343;
+
+  // --- FASE B: DETECCIÓN Y ESCANEO ---
+  if (distancia > 0 && distancia < 10) {
+    
+    digitalWrite(PIN_LED_SENSOR, HIGH); // Encendemos luces
+    
+    Serial.println("¡Objeto detectado! Analizando color...");
+    delay(1500); 
+
+    // --- FASE C: LECTURA DE FILTROS DE COLOR ---
+    digitalWrite(S2, LOW); digitalWrite(S3, LOW);
+    int rojo = pulseIn(OUT_PIN, LOW);
+    delay(50); 
+    
+    digitalWrite(S2, HIGH); digitalWrite(S3, HIGH);
+    int verde = pulseIn(OUT_PIN, LOW);
+    delay(50);
+    
+    digitalWrite(S2, LOW); digitalWrite(S3, HIGH);
+    int azul = pulseIn(OUT_PIN, LOW);
+    delay(50);
+
+    Serial.print("Rojo:"); Serial.print(rojo);
+    Serial.print(" Verde:"); Serial.print(verde);
+    Serial.print(" Azul:"); Serial.println(azul);
+
+    // --- FASE D: DECISIÓN CON FILTRO DE SEGURIDAD ---
+
+    // PRIMERO: Verificamos si los valores son tan altos que significan "VACÍO"
+    if (rojo > umbralObjetoReal && verde > umbralObjetoReal && azul > umbralObjetoReal) {
+      Serial.println("Lectura descartada: No hay ningún objeto frente al sensor de color.");
+      
+    // Si pasa la prueba, procedemos a identificar el color real:
+    } else {
+      
+      // ¿Es ROJO? (Modo Mantenimiento - 30 segundos)
+      if (rojo < verde && rojo < azul) {
+        Serial.println("Es ROJO -> Abriendo AMBAS puertas...");
+        
+        while (posActualPlastico > plasticoAbierto || posActualPapel < papelAbierto) {
+          if (posActualPlastico > plasticoAbierto) posActualPlastico--;
+          if (posActualPapel < papelAbierto) posActualPapel++;
+          servoPlastico.write(posActualPlastico);
+          servoPapel.write(posActualPapel);
+          delay(velocidadServo);
+        }
+        posActualPlastico = plasticoAbierto;
+        posActualPapel = papelAbierto;
+
+        delay(10000); 
+        
+        while (posActualPlastico < plasticoCerrado || posActualPapel > papelCerrado) {
+          if (posActualPlastico < plasticoCerrado) posActualPlastico++;
+          if (posActualPapel > papelCerrado) posActualPapel--;
+          servoPlastico.write(posActualPlastico);
+          servoPapel.write(posActualPapel);
+          delay(velocidadServo);
+        }
+        posActualPlastico = plasticoCerrado;
+        posActualPapel = papelCerrado;
+      
+      // ¿Es PLÁSTICO (Verde)? 
+      } else if (verde < rojo && verde < azul) {
+        Serial.println("Es PLÁSTICO (Verde) -> Abriendo puerta izquierda");
+        moverServoPlastico(plasticoAbierto); 
+        delay(3000);                         
+        moverServoPlastico(plasticoCerrado); 
+        
+      // ¿Es PAPEL (Azul)? 
+      } else if (azul < rojo && azul < verde) {
+        Serial.println("Es PAPEL (Azul) -> Abriendo puerta derecha");
+        moverServoPapel(papelAbierto);       
+        delay(3000);                         
+        moverServoPapel(papelCerrado);       
+      }
+    }
+
+    digitalWrite(PIN_LED_SENSOR, LOW); // Apagamos luces
+    delay(1000); 
+  }
+}
+
+// ==========================================
+// --- 5. FUNCIONES PARA MOVIMIENTO SUAVE ---
+// ==========================================
+void moverServoPlastico(int destino) {
+  if (posActualPlastico < destino) {
+    for (int i = posActualPlastico; i <= destino; i++) {
+      servoPlastico.write(i);
+      delay(velocidadServo);
+    }
+  } else {
+    for (int i = posActualPlastico; i >= destino; i--) {
+      servoPlastico.write(i);
+      delay(velocidadServo);
+    }
+  }
+  posActualPlastico = destino;
+}
+
+void moverServoPapel(int destino) {
+  if (posActualPapel < destino) {
+    for (int i = posActualPapel; i <= destino; i++) {
+      servoPapel.write(i);
+      delay(velocidadServo);
+    }
+  } else {
+    for (int i = posActualPapel; i >= destino; i--) {
+      servoPapel.write(i);
+      delay(velocidadServo);
+    }
+  }
+  posActualPapel = destino;
+}
